@@ -50,6 +50,62 @@ var _ = framework.KubeDescribe("Networking", func() {
 		ic = f.CRIClient.CRIImageClient
 	})
 
+	Context("runtime should support networking ping", func() {
+		var podID1 string
+		var podID2 string
+
+		AfterEach(func() {
+			By("stop PodSandbox")
+			rc.StopPodSandbox(podID1)
+			By("delete PodSandbox")
+			rc.RemovePodSandbox(podID1)
+
+			By("stop PodSandbox 2")
+			rc.StopPodSandbox(podID2)
+			By("delete PodSandbox 2")
+			rc.RemovePodSandbox(podID2)
+		})
+
+		It("runtime should support DNS config [Conformance]", func() {
+			By("1 create a PodSandbox with DNS config")
+			var podConfig *runtimeapi.PodSandboxConfig
+			podID1, podConfig = createPodSandWithDNSConfig(rc)
+
+			By("2 create a PodSandbox with DNS config")
+			podID2, podConfig = createPodSandWithDNSConfig(rc)
+
+			By("create container 1")
+			container1ID := framework.CreateDefaultContainer(rc, ic, podID1, podConfig, "ping-across-containers1")
+
+			By("start container 1")
+			startContainer(rc, container1ID)
+
+			By("create container 2")
+			container2ID := framework.CreateDefaultContainer(rc, ic, podID2, podConfig, "ping-across-containers2")
+
+			By("start container 2")
+			startContainer(rc, container2ID)
+
+			pod1Ip := getPodIP(rc, podID1)
+			By("ping from container 1 to pod 1")
+			pingIPExec(rc, container1ID, pod1Ip)
+
+			pod2Ip := getPodIP(rc, podID2)
+			By("ping from container 2 to pod 2")
+			pingIPExec(rc, container2ID, pod2Ip)
+
+//			By("ping from host , run!")
+//			time.Sleep(time.Second * 129)
+
+			By("ping from container 2 to pod 1")
+			pingIPExec(rc, container2ID, pod1Ip)
+//
+//			By("ping from container 1 to pod 2")
+//			pingIPExec(rc, container1ID, pod2Ip)
+
+		})
+	})
+
 	Context("runtime should support networking", func() {
 		var podID string
 
@@ -58,26 +114,6 @@ var _ = framework.KubeDescribe("Networking", func() {
 			rc.StopPodSandbox(podID)
 			By("delete PodSandbox")
 			rc.RemovePodSandbox(podID)
-		})
-
-		It("runtime should support DNS config [Conformance]", func() {
-			By("create a PodSandbox with DNS config")
-			var podConfig *runtimeapi.PodSandboxConfig
-			podID, podConfig = createPodSandWithDNSConfig(rc)
-
-			By("create container")
-			containerID := framework.CreateDefaultContainer(rc, ic, podID, podConfig, "container-for-DNS-config-test-")
-
-			By("start container")
-			startContainer(rc, containerID)
-
-			By("check DNS config")
-			expectedContent := []string{
-				"nameserver " + defaultDNSServer,
-				"search " + defaultDNSSearch,
-				"options " + defaultDNSOption,
-			}
-			checkDNSConfig(rc, containerID, expectedContent)
 		})
 
 		It("runtime should support port mapping with only container port [Conformance]", func() {
@@ -155,6 +191,24 @@ func createPodSandboxWithPortMapping(c internalapi.RuntimeService, portMappings 
 
 	podID := framework.RunPodSandbox(c, config)
 	return podID, config
+}
+
+// getPodIP get contaienr IP
+func getPodIP(c internalapi.RuntimeService, podID string) string {
+	By("get Pod IP")
+	status := getPodSandboxStatus(c, podID)
+	Expect(status.GetNetwork()).NotTo(BeNil(), "The network in status should not be nil.")
+	Expect(status.GetNetwork().Ip).NotTo(BeNil(), "The IP should not be nil.")
+	return status.GetNetwork().Ip
+}
+
+func pingIPExec(c internalapi.RuntimeService, containerID string, ip string) {
+	By("Check can ping to " + ip)
+	cmd := []string{"ping", "-c", "1", ip}
+	_, stderr, err := c.ExecSync(containerID, cmd, time.Duration(defaultExecSyncTimeout)*time.Second)
+	framework.ExpectNoError(err, "failed to execSync in container %q", containerID)
+	Expect(stderr).To(BeNil(), "The stderr should be nil.")
+	framework.Logf("ping succeed")
 }
 
 // checkDNSConfig checks the content of /etc/resolv.conf.
